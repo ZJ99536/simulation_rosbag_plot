@@ -7,11 +7,11 @@ from numpy import loadtxt
 
 class DroneControlSim:
     def __init__(self):
-        self.sim_time = 7.5
+        self.sim_time = 4
         self.sim_step = 0.033
         self.drone_states = np.zeros((int(self.sim_time/self.sim_step), 15))
-        self.drone_states[0, 0] = -3.0
-        self.drone_states[0, 1] = 2.0
+        self.drone_states[0, 0] = 0.0
+        self.drone_states[0, 1] = 0.0
         self.drone_states[0, 2] = 1.0
         self.status = 0
         self.time= np.zeros((int(self.sim_time/self.sim_step),))
@@ -142,24 +142,33 @@ class DroneControlSim:
         polyy = self.trajPlanning(t,py,vy,ay)
         polyz = self.trajPlanning(t,pz,vz,az)
         return polyx,polyy,polyz
+    
+    
 
     def predictOnce(self, point0,waypoint3,waypoint4,limit,model):
         point = point0
         velocity = np.array([0.0, 0.0, 0.0])
         acc = np.array([0.0, 0.0, 9.81])
         pqr = np.array([0.0, 0.0, 0.0])
-        while (limit > 0 and point[0] > limit) or (limit < 0 and point[0] < limit):
-            input = np.zeros(15)
-            # print(current_position)
-            error3 = waypoint3 - point
-            error4 = waypoint4 - point
-            for i in range(3):
-                input[i] = error3[i]
-                input[i+3] = error4[i]
-                input[i+6] = velocity[i]
-                input[i+9] = acc[i]
-                input[i+12] = pqr[i]
-            output = model(input.reshape(-1,15))
+
+        input = np.zeros(15)
+        # print(current_position)
+        error3 = waypoint3 - point
+        error4 = waypoint4 - point
+        for i in range(3):
+            input[i] = error3[i]
+            input[i+3] = error4[i]
+            input[i+6] = velocity[i]
+            input[i+9] = acc[i]
+            input[i+12] = pqr[i]
+        output = model(input.reshape(-1,15))
+
+        count = 0
+        if abs(output[0, 9]) < abs(acc[0]):
+            count += 1
+        
+        # while count < 4 :
+        while point[0] < limit :
             point[0] = (((waypoint3[0] - output[0, 0]) + (waypoint4[0] - output[0, 3])) / 2)
             point[1] = (((waypoint3[1] - output[0, 1]) + (waypoint4[1] - output[0, 4])) / 2)
             point[2] = (((waypoint3[2] - output[0, 2]) + (waypoint4[2] - output[0, 5])) / 2)
@@ -172,6 +181,24 @@ class DroneControlSim:
             pqr[0] = output[0, 12]
             pqr[1] = output[0, 13]
             pqr[2] = output[0, 14]
+
+            input = np.zeros(15)
+            # print(current_position)
+            error3 = waypoint3 - point
+            error4 = waypoint4 - point
+            for i in range(3):
+                input[i] = error3[i]
+                input[i+3] = error4[i]
+                input[i+6] = velocity[i]
+                input[i+9] = acc[i]
+                input[i+12] = pqr[i]
+            output = model(input.reshape(-1,15))
+
+            if abs(output[0, 9]) < abs(acc[0]):
+                count += 1
+            else:
+                count = 0
+            
         return point,velocity,acc
     
     def df_control(self,position_cmd,velocity_cmd,aref,j):
@@ -246,9 +273,17 @@ class DroneControlSim:
         model0 = keras.models.load_model('/home/zhoujin/learning/model/quadb2_8m.h5') # quad5 m4 m6(softplus 64) m5(softplus 640)
         model1 = keras.models.load_model('/home/zhoujin/learning/model/quad2_8m.h5') # quad5 m4 m6(softplus 64) m5(softplus 640)
         last_velocity = np.zeros(3)
-        point0,velocity0,acc0 = self.predictOnce(np.array([3.0, 0.0, 1.0]),np.array([0.0, -1.0, 0.6]),np.array([-3.0, 0.0, 1.0]),1.5,model0)
-        point1,velocity1,acc1 = self.predictOnce(np.array([-3.0, 0.0, 1.0]),np.array([0.0, 1.0, 1.5]),np.array([3.0, 0.0, 1.0]),-1.5,model1)
+        point0,velocity0,acc0 = self.predictOnce(np.array([6.5, 0.0, 1.0]),np.array([10.0, 1.0, 0.6]),np.array([14.0, 2.0, 1.0]),8.0,model1)
+        point1,velocity1,acc1 = self.predictOnce(np.array([14.0, 2.0, 1.0]),np.array([17.2, 3.0, 1.4]),np.array([20.5, 4.0, 1.0]),15.5,model1)
         point2,velocity2,acc2 = self.predictOnce(np.array([3.0, 0.0, 1.0]),np.array([0.0, -1.0, 0.5]),np.array([-3.0, -2.0, 1.0]),1.5,model0)
+        print(point0)
+        print(point1)
+        print(point2)
+
+        kmv0 = 0.2
+        kmv = 0.2
+
+        count = 0
     
         for self.pointer in range(self.drone_states.shape[0]-1):      
             input = np.zeros(15)
@@ -262,60 +297,88 @@ class DroneControlSim:
             current_acc = np.array([self.drone_states[t, 12], self.drone_states[t, 13], self.drone_states[t, 14]])
             if self.status == 0 :
                 model = model1
-                waypoint0 = np.array([0.0, 1.0, 1.5])
-                waypoint1 = np.array([3.0, 0.0, 1.0])
+                waypoint0 = np.array([3.5, -1.0, 1.5])
+                waypoint1 = np.array([6.5, 0.0, 1.0])
                 # error = waypoint1 - current_position
                 # if error[0]**2 + error[1]**2 + error[2]**2 < 0.2:
                 #     self.status = 1
                 if self.pointer > 1:
-                    # if self.drone_states[self.pointer-1,12] < 0 and abs(self.drone_states[self.pointer-1,12]) > abs(self.drone_states[self.pointer-2,12]):
-                    if current_position[0] > 1.0:
+                    # if self.drone_states[self.pointer-1,12] < 0 and self.drone_states[self.pointer-1,12] + self.drone_states[self.pointer-3,12] > 2 * self.drone_states[self.pointer-2,12]:
+                    if self.drone_states[self.pointer,0] > 5.0:
+                        count += 1
+                    else :
+                        count = 0
+                    if count > 0:
                         self.status = 4
-                        ts0 = 0.45
-                        ts1 = 0.5
-                        waypoint1 = np.array([2.9, 0.0, 1.0])
+                        waypoint1 = np.array([6.5, 0.0, 1.0])
+                        ts0 = abs(current_position[0] - waypoint1[0])**1 * kmv0
+                        ts1 = abs(point0[0] - waypoint1[0])**1 * kmv
+                        # ts0 = abs(current_position[0] - waypoint1[0])**0.5 * kmv / abs(self.drone_states[self.pointer,3])
+                        # ts1 = abs(point0[0] - waypoint1[0])**0.5 * kmv / abs(self.drone_states[self.pointer,3])
+                        print(ts0,ts1)
+                        print(current_position[0])
+                        
                         position = np.array([self.drone_states[self.pointer, 0], self.drone_states[self.pointer, 1], self.drone_states[self.pointer, 2]])
                         velocity = np.array([self.drone_states[self.pointer, 3], self.drone_states[self.pointer, 4], self.drone_states[self.pointer, 5]])
                         acc = np.array([self.drone_states[self.pointer, 12], self.drone_states[self.pointer, 13], self.drone_states[self.pointer, 14]])
                         polyx,polyy,polyz = self.planOnce(ts0,ts1,waypoint1,point0,velocity0,acc0,position,velocity,acc)
                         polyt = self.pointer
                         print(polyt)
+                        count = 0
             if self.status == 1 :
-                model = model0
-                waypoint0 = np.array([0.0, -1.0, 0.5])
-                waypoint1 = np.array([-3.0, 0.0, 1.0])
+                model = model1
+                waypoint0 = np.array([10.0, 1.0, 0.6])
+                waypoint1 = np.array([14.0, 2.0, 1.0])
                 error = waypoint1 - current_position
                 # if error[0]**2 + error[1]**2 + error[2]**2 < 0.2:
                 #     self.status = 2
-                if current_position[0] < -0.5:
-                    self.status = 5
-                    ts0 = 0.5
-                    ts1 = 0.55
-                    waypoint1 = np.array([-2.9, 0.0, 1.0])
-                    position = np.array([self.drone_states[self.pointer, 0], self.drone_states[self.pointer, 1], self.drone_states[self.pointer, 2]])
-                    velocity = np.array([self.drone_states[self.pointer, 3], self.drone_states[self.pointer, 4], self.drone_states[self.pointer, 5]])
-                    acc = np.array([self.drone_states[self.pointer, 12], self.drone_states[self.pointer, 13], self.drone_states[self.pointer, 14]])
-                    polyx,polyy,polyz = self.planOnce(ts0,ts1,waypoint1,point1,velocity1,acc1,position,velocity,acc)
-                    polyt = self.pointer
-                    print(polyt)
+                # if current_position[0] < -1.0:
+                if self.drone_states[self.pointer,0] > 12.5:
+                # if self.drone_states[self.pointer-1,12] > 0 and self.drone_states[self.pointer-1,12] + self.drone_states[self.pointer-3,12] > 2 * self.drone_states[self.pointer-2,12]:
+                    count += 1
+                else :
+                    count = 0
+                # if count > 0:
+                #     self.status = 5
+                #     waypoint1 = np.array([14.0, 2.0, 1.0])
+                #     # ts0 = abs(current_position[0] - waypoint1[0])**0.5 * kmv / abs(self.drone_states[self.pointer,3])
+                #     # ts1 = abs(point1[0] - waypoint1[0])**0.5 * kmv / abs(self.drone_states[self.pointer,3])
+                #     ts0 = abs(current_position[0] - waypoint1[0])**0.5 * kmv0
+                #     ts1 = abs(point1[0] - waypoint1[0])**0.5 * kmv
+                #     print(current_position[0])
+                    
+                #     position = np.array([self.drone_states[self.pointer, 0], self.drone_states[self.pointer, 1], self.drone_states[self.pointer, 2]])
+                #     velocity = np.array([self.drone_states[self.pointer, 3], self.drone_states[self.pointer, 4], self.drone_states[self.pointer, 5]])
+                #     acc = np.array([self.drone_states[self.pointer, 12], self.drone_states[self.pointer, 13], self.drone_states[self.pointer, 14]])
+                #     polyx,polyy,polyz = self.planOnce(ts0,ts1,waypoint1,point1,velocity1,acc1,position,velocity,acc)
+                #     polyt = self.pointer
+                #     print(polyt)
             if self.status == 2 :
                 model = model1
-                waypoint0 = np.array([0.0, 1.0, 1.4])
-                waypoint1 = np.array([3.0, 0.0, 1.0])
+                waypoint0 = np.array([17.2, 3.0, 1.4])
+                waypoint1 = np.array([20.5, 4.0, 1.0])
                 error = waypoint1 - current_position
                 # if error[0]**2 + error[1]**2 + error[2]**2 < 0.2:
                 #     self.status = 3
-                if current_position[0] > 1.0:
-                    self.status = 6
-                    ts0 = 0.6
-                    ts1 = 0.65
-                    waypoint1 = np.array([2.9, 0.0, 1.0])
-                    position = np.array([self.drone_states[self.pointer, 0], self.drone_states[self.pointer, 1], self.drone_states[self.pointer, 2]])
-                    velocity = np.array([self.drone_states[self.pointer, 3], self.drone_states[self.pointer, 4], self.drone_states[self.pointer, 5]])
-                    acc = np.array([self.drone_states[self.pointer, 12], self.drone_states[self.pointer, 13], self.drone_states[self.pointer, 14]])
-                    polyx,polyy,polyz = self.planOnce(ts0,ts1,waypoint1,point2,velocity2,acc2,position,velocity,acc)
-                    polyt = self.pointer
-                    print(polyt)
+                # if current_position[0] > 0 and self.drone_states[self.pointer-1,12] < 0 and self.drone_states[self.pointer-1,12] + self.drone_states[self.pointer-3,12] > 2 * self.drone_states[self.pointer-2,12]:
+                #     count += 1
+                # else :
+                #     count = 0
+                # if count > 1:
+                #     self.status = 6
+                #     waypoint1 = np.array([2.9, 0.0, 1.0])
+                #     # ts0 = abs(current_position[0] - waypoint1[0])**0.5 * kmv / abs(self.drone_states[self.pointer,3])
+                #     # ts1 = abs(point2[0] - waypoint1[0])**0.5 * kmv / abs(self.drone_states[self.pointer,3])                    
+                #     ts0 = abs(current_position[0] - waypoint1[0])**0.5 * kmv0
+                #     ts1 = abs(point2[0] - waypoint1[0])**0.5 * kmv
+                #     print(current_position[0])
+                    
+                #     position = np.array([self.drone_states[self.pointer, 0], self.drone_states[self.pointer, 1], self.drone_states[self.pointer, 2]])
+                #     velocity = np.array([self.drone_states[self.pointer, 3], self.drone_states[self.pointer, 4], self.drone_states[self.pointer, 5]])
+                #     acc = np.array([self.drone_states[self.pointer, 12], self.drone_states[self.pointer, 13], self.drone_states[self.pointer, 14]])
+                #     polyx,polyy,polyz = self.planOnce(ts0,ts1,waypoint1,point2,velocity2,acc2,position,velocity,acc)
+                #     polyt = self.pointer
+                #     print(polyt)
             if self.status == 3 :
                 model = model0
                 waypoint0 = np.array([0.0, -1.0, 0.6])
@@ -435,53 +498,49 @@ class DroneControlSim:
    
 
     def plot_states(self):
-        cpc = loadtxt('/home/zhoujin/trajectory-generation/trajectory/M_cpc2.txt', delimiter=',')
-        snap = loadtxt('/home/zhoujin/trajectory-generation/trajectory/mm_snap.txt', delimiter=',')
-# ax1.plot3D(snap[1,:], snap[2,:], snap[3,:], color=np.array(color[0]) / 255, linewidth=1.5,ls='-',
-#             label='Minimum Snap', alpha=0.8)
+        cpc = loadtxt('/home/zhoujin/trajectory-generation/trajectory/line_cpc.txt', delimiter=',')
         sns.set(style="darkgrid", font_scale=1.0)
         fig1, ax1 = plt.subplots(4,3)
         self.position_cmd[-1] = self.position_cmd[-2]
         ax1[0,0].plot(self.time,self.drone_states[:,0],label='real')
-        ax1[0,0].plot(self.time,self.position_cmd[:,0],label='cmd')
+        # ax1[0,0].plot(self.time,self.position_cmd[:,0],label='cmd')
         ax1[0,0].plot(cpc[:,0:1], cpc[:,1:2],label='cpc')
-        ax1[0,0].plot(snap[0,:],snap[1,:])
         ax1[0,0].set_ylabel('x[m]')
         ax1[0,1].plot(self.time,self.drone_states[:,1])
-        ax1[0,1].plot(self.time,self.position_cmd[:,1])
+        # ax1[0,1].plot(self.time,self.position_cmd[:,1])
         ax1[0,1].plot(cpc[:,0:1], cpc[:,2:3])
         ax1[0,1].set_ylabel('y[m]')
         ax1[0,2].plot(self.time,self.drone_states[:,2])
-        ax1[0,2].plot(self.time,self.position_cmd[:,2])
+        # ax1[0,2].plot(self.time,self.position_cmd[:,2])
         ax1[0,2].plot(cpc[:,0:1], cpc[:,3:4])
         ax1[0,2].set_ylabel('z[m]')
         ax1[0,0].legend()
 
         self.velocity_cmd[-1] = self.velocity_cmd[-2]
         ax1[1,0].plot(self.time,self.drone_states[:,3])
-        ax1[1,0].plot(self.time,self.velocity_cmd[:,0])
+        # ax1[1,0].plot(self.time,self.velocity_cmd[:,0])
         ax1[1,0].plot(cpc[:,0:1], cpc[:,8:9])
         ax1[1,0].set_ylabel('vx[m/s]')
         ax1[1,1].plot(self.time,self.drone_states[:,4])
-        ax1[1,1].plot(self.time,self.velocity_cmd[:,1])
+        # ax1[1,1].plot(self.time,self.velocity_cmd[:,1])
         ax1[1,1].plot(cpc[:,0:1], cpc[:,9:10])
         ax1[1,1].set_ylabel('vy[m/s]')
         ax1[1,2].plot(self.time,self.drone_states[:,5])
-        ax1[1,2].plot(self.time,self.velocity_cmd[:,2])
+        # ax1[1,2].plot(self.time,self.velocity_cmd[:,2])
         ax1[1,2].plot(cpc[:,0:1], cpc[:,10:11])
         ax1[1,2].set_ylabel('vz[m/s]')
 
         self.acc_cmd[-1] = self.acc_cmd[-2]
         ax1[2,0].plot(self.time,self.drone_states[:,12])
-        ax1[2,0].plot(self.time,self.acc_cmd[:,0])
+        # ax1[2,0].plot(self.time,self.acc_cmd[:,0])
         ax1[2,0].plot(cpc[:,0:1], cpc[:,5:6])
         ax1[2,0].set_ylabel('ax[m/s]')
         ax1[2,1].plot(self.time,self.drone_states[:,13])
-        ax1[2,1].plot(self.time,self.acc_cmd[:,1])
+        # ax1[2,1].plot(self.time,self.acc_cmd[:,1])
         ax1[2,1].plot(cpc[:,0:1], cpc[:,6:7])
         ax1[2,1].set_ylabel('ay[m/s]')
         ax1[2,2].plot(self.time,self.drone_states[:,14])
-        ax1[2,2].plot(self.time,self.acc_cmd[:,2])
+        # ax1[2,2].plot(self.time,self.acc_cmd[:,2])
         ax1[2,2].plot(cpc[:,0:1], cpc[:,7:8])
         ax1[2,2].set_ylabel('az[m/s]')
 

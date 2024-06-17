@@ -7,12 +7,12 @@ from numpy import loadtxt
 
 import rosbag
 
-bag_file = '/home/zhoujin/Desktop/bags/2023-09-12-20-46-03.bag'
+bag_file = '/home/zhoujin/Desktop/bags/2024-06-04-14-43-27.bag'
 bag = rosbag.Bag(bag_file, "r")   # 载入bag文件
 position_x= []
 time_data = []
-init_count = 2425
-end_count = 3240
+init_count = 6420
+end_count = 8000
 count = 0
 for topic, msg, t in bag.read_messages(topics=['/outer_position']):
         # print(topic)
@@ -25,7 +25,7 @@ for topic, msg, t in bag.read_messages(topics=['/outer_position']):
 bag.close()
 
 
-cpc = loadtxt('/home/zhoujin/trajectory-generation/trajectory/M_slower.txt', delimiter=',')
+cpc = loadtxt('/home/zhoujin/trajectory-generation/trajectory/M_cpc_D.txt', delimiter=',')
 # cpc = loadtxt('/home/zhoujin/trajectory-generation/trajectory/M_cpc.csv')
 # sns.set_theme()
 sns.set(style="darkgrid", font_scale=1.0)

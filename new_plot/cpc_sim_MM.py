@@ -4,6 +4,7 @@ from math import sin,cos,tan,atan,atan2,asin
 from tensorflow import keras
 import seaborn as sns
 from numpy import loadtxt
+from cvxopt import matrix, solvers
 
 class DroneControlSim:
     def __init__(self):
@@ -104,10 +105,131 @@ class DroneControlSim:
         kMatrix = np.matmul(np.linalg.inv(tMatrix),xMatrix)
         return kMatrix
 
+    def trajPlanning(self, t, p, v, a):
+        xMatrix = np.zeros((4*len(t)+2,1))
+        for i in range(len(p)-1):
+            xMatrix[i,0] = p[i]
+            xMatrix[len(t)+i,0] = p[i+1]
+
+        xMatrix[-4,0] = v[0]
+        xMatrix[-3,0] = a[0]
+        xMatrix[-2,0] = v[1]
+        xMatrix[-1,0] = a[1]
+
+        tMatrix = np.zeros((4*len(t)+2,4*len(t)+2)) 
+        tMatrix[0,4] = 1 #p0(0)
+        tMatrix[len(t)-1,-1] = 1 #pn(0)
+        for j in range(5):
+            tMatrix[len(t),j] = t[0]**(4-j) #p0(t)
+            tMatrix[2*len(t)-1,-1-j] = t[-1]**j #pn(t)
+
+        for j in range(4):
+            tMatrix[2*len(t),j] = (4-j)*t[0]**(3-j) #v0(t)   
+        for j in range(3):         
+            tMatrix[3*len(t)-1,j] = (4-j)*(3-j)*t[0]**(2-j) #a0(t)
+            
+        tMatrix[3*len(t)-2,-2] = -1 #-vn(0)
+        tMatrix[4*len(t)-3,-3] = -2 #-an(0)
+
+        tMatrix[-4,3] = 1 #v0
+        tMatrix[-3,2] = 2 #a0
+
+        for j in range(4):
+            tMatrix[-2,j-5] = (4-j)*t[-1]**(3-j) #vt
+        for j in range(3):         
+            tMatrix[-1,j-5] = (4-j)*(3-j)*t[-1]**(2-j) #at
+
+        kMatrix = np.matmul(np.linalg.inv(tMatrix),xMatrix)
+        return kMatrix
+    
+    def getQk(self,T_down, T_up):
+        Q = np.zeros((6, 6))
+        Q[3][4] =  72 * (T_up**2 - T_down**2)
+        Q[3][5] = 120 * (T_up**3 - T_down**3)
+        Q[4][5] = 360 * (T_up**4 - T_down**4)
+        Q = Q + Q.T # Q为对称矩阵
+        Q[3][3] =  36 * (T_up**1 - T_down**1)
+        Q[4][4] = 192 * (T_up**3 - T_down**3)
+        Q[5][5] = 720 * (T_up**5 - T_down**5)
+        return Q
+    
+    def traj_jerk(self,T,x,v,a):
+        # deltaT = 2 # 每一段2秒
+        # T = np.linspace(0, deltaT * (len(x) - 1), len(x))
+
+        ########### 目标函数 ###########
+        ######## 1/2xTQx + qTx ########
+        K = 3                   # jerk为3阶导数，取K=3
+        n_order = 2 * K - 1     # 多项式阶数
+        M = len(x) - 1          # 轨迹的段数
+        N = M * (n_order + 1)   # 矩阵Q的维数
+
+        Q = np.zeros((N, N))
+        for k in range(1, M + 1):
+            Qk = self.getQk(T[k - 1], T[k])
+            # Qk = self.getQk(T[k - 1], 1)
+            Q[(6 * (k - 1)) : (6 * k), (6 * (k - 1)) : (6 * k)] = Qk
+
+
+        Q = Q * 2 # 因为标准目标函数为： 1/2xTQx + qTx，所以要乘2
+
+        ########### 约束 ###########
+        # 1.导数约束 Derivative Constraint
+        A0 = np.zeros((2 * K + M - 1, N)) 
+        b0 = np.zeros(len(A0))
+
+        # 添加首末状态约束(包括位置、速度、加速度)
+        for k in range(K): 
+            for i in range(k, 6):
+                c = 1
+                for j in range(k):
+                    c *= (i - j)
+                A0[0 + k * 2][i]                = c * T[0]**(i - k)
+                A0[1 + k * 2][(M - 1) * 6 + i]  = c * T[M]**(i - k)
+        b0[0] = x[0]
+        b0[1] = x[M]
+        b0[2] = v[0]
+        b0[3] = v[1]
+        b0[4] = a[0]
+        b0[5] = a[1]
+        # 添加每段轨迹的初始位置约束
+        for m in range(1, M):
+            for i in range(6):
+                A0[6 + m - 1][m * 6 + i] = T[m]**i
+            b0[6 + m - 1] = x[m]
+
+            # 2.连续性约束 Continuity Constraint
+            A1 = np.zeros(((M - 1) * 3, N))
+            b1 = np.zeros(len(A1))
+            for m in range(M - 1):
+                for k in range(3): # 最多两阶导数相等    
+                    for i in range(k, 6):
+                        c = 1
+                        for j in range(k):
+                            c *= (i - j)
+                        index = m * 3 + k
+                        A1[index][m * 6 + i] = c * T[m + 1]**(i - k)
+                        A1[index][(m + 1)* 6 + i] = -c * T[m + 1]**(i - k)
+            A = np.vstack((A0, A1))
+            b = np.hstack((b0, b1))
+            #%% 解二次规划问题
+            
+            # 目标函数
+            Q = matrix(Q)
+            q = matrix(np.zeros(N))
+            # 等式约束: Ax = b
+            A = matrix(A)
+            b = matrix(b)
+            result = solvers.qp(Q, q, A=A, b=b)
+            p_coff = np.asarray(result['x']).flatten()
+
+            return p_coff
+
+
     def planOnce(self, tseg0, tseg1, waypoint1,point,velocity,acc,current_position,current_velocity,current_acc):
-        t = np.ones(2)
-        t[0] = tseg0
-        t[1] = tseg1
+        t = np.zeros(3)
+        t[1] = tseg0
+        t[2] = tseg0 + tseg1
         px = np.zeros(3)
         px[0] = current_position[0]
         px[1] = waypoint1[0]
@@ -138,9 +260,9 @@ class DroneControlSim:
         az = np.zeros(2)
         az[0] = current_acc[2]
         az[1] = acc[2] - 9.81
-        polyx = self.trajPlanning(t,px,vx,ax)
-        polyy = self.trajPlanning(t,py,vy,ay)
-        polyz = self.trajPlanning(t,pz,vz,az)
+        polyx = self.traj_jerk(t,px,vx,ax)
+        polyy = self.traj_jerk(t,py,vy,ay)
+        polyz = self.traj_jerk(t,pz,vz,az)
         return polyx,polyy,polyz
 
     def predictOnce(self, point0,waypoint3,waypoint4,limit,model):
@@ -289,8 +411,8 @@ class DroneControlSim:
                 #     self.status = 2
                 if current_position[0] < -0.5:
                     self.status = 5
-                    ts0 = 0.5
-                    ts1 = 0.55
+                    ts0 = 0.6
+                    ts1 = 0.7
                     waypoint1 = np.array([-2.9, 0.0, 1.0])
                     position = np.array([self.drone_states[self.pointer, 0], self.drone_states[self.pointer, 1], self.drone_states[self.pointer, 2]])
                     velocity = np.array([self.drone_states[self.pointer, 3], self.drone_states[self.pointer, 4], self.drone_states[self.pointer, 5]])
@@ -326,24 +448,24 @@ class DroneControlSim:
 
             if self.status >= 4:
                 current_t = (self.pointer - polyt) * self.sim_step
-                if current_t < ts0 :
-                    ts = current_t
-                    tt = np.array([ts**4, ts**3, ts**2, ts, 1])
-                    vt = np.array([4*ts**3, 3*ts**2, 2*ts, 1, 0])
-                    at = np.array([12*ts**2, 6*ts, 2, 0, 0])
-                    jt = np.array([24*ts, 6, 0, 0, 0])
-                    aax = np.array([polyx[0],polyx[1],polyx[2],polyx[3],polyx[4]])
-                    aay = np.array([polyy[0],polyy[1],polyy[2],polyy[3],polyy[4]])
-                    aaz = np.array([polyz[0],polyz[1],polyz[2],polyz[3],polyz[4]])
-                elif current_t < ts0+ts1 :
-                    ts = current_t - ts0
-                    tt = np.array([ts**4, ts**3, ts**2, ts, 1])
-                    vt = np.array([4*ts**3, 3*ts**2, 2*ts, 1, 0])
-                    at = np.array([12*ts**2, 6*ts, 2, 0, 0])
-                    jt = np.array([24*ts, 6, 0, 0, 0])
-                    aax = np.array([polyx[5],polyx[6],polyx[7],polyx[8],polyx[9]])
-                    aay = np.array([polyy[5],polyy[6],polyy[7],polyy[8],polyy[9]])
-                    aaz = np.array([polyz[5],polyz[6],polyz[7],polyz[8],polyz[9]])
+                if current_t < ts0+ts1:
+                    if current_t < ts0:
+                        coefx = polyx[0:6]
+                        coefy = polyy[0:6]
+                        coefz = polyz[0:6]
+                    else:
+                        coefx = polyx[6:12]
+                        coefy = polyy[6:12]
+                        coefz = polyz[6:12]
+                    t = current_t
+                    t_pos = np.vstack((t**0, t**1, t**2, t**3, t**4, t**5))
+                    t_vel = np.vstack((t*0, t**0, 2 * t**1, 3 * t**2, 4 * t**3, 5 * t**4))
+                    t_acc = np.vstack((t*0, t*0, 2 * t**0, 3 * 2 * t**1, 4 * 3 * t**2, 5 * 4 * t**3))
+                    t_jer = np.vstack((t*0, t*0, t*0, 3 * 2 * t**0, 4 * 3 * 2 * t**1, 5 * 4 * 3 * t**2))
+                    # coef = p_coff[k * 6 : (k + 1) * 6]
+                    coefx = np.reshape(coefx, (1, 6))
+                    coefy = np.reshape(coefy, (1, 6))
+                    coefz = np.reshape(coefz, (1, 6))
                 else :
                     self.status = self.status - 3            
             
@@ -392,18 +514,18 @@ class DroneControlSim:
                 thrust_cmd = thrust_cmd ** 0.5
 
             else:
-                x_cmd = np.dot(tt, aax)
-                y_cmd = np.dot(tt, aay)
-                z_cmd = np.dot(tt, aaz)
-                vx_cmd = np.dot(vt, aax)
-                vy_cmd = np.dot(vt, aay)
-                vz_cmd = np.dot(vt, aaz)
-                ax_cmd = np.dot(at, aax)
-                ay_cmd = np.dot(at, aay)
-                az_cmd = np.dot(at, aaz)
-                jx_cmd = np.dot(jt, aax)
-                jy_cmd = np.dot(jt, aay)
-                jz_cmd = np.dot(jt, aaz)
+                x_cmd = coefx.dot(t_pos)[0]
+                y_cmd = coefy.dot(t_pos)[0]
+                z_cmd = coefz.dot(t_pos)[0]
+                vx_cmd = coefx.dot(t_vel)[0]
+                vy_cmd = coefy.dot(t_vel)[0]
+                vz_cmd = coefz.dot(t_vel)[0]
+                ax_cmd = coefx.dot(t_acc)[0]
+                ay_cmd = coefy.dot(t_acc)[0]
+                az_cmd = coefz.dot(t_acc)[0]
+                jx_cmd = coefx.dot(t_jer)[0]
+                jy_cmd = coefy.dot(t_jer)[0]
+                jz_cmd = coefz.dot(t_jer)[0]
                 self.position_cmd[self.pointer] = [x_cmd[0], y_cmd[0], z_cmd[0]]
                 self.velocity_cmd[self.pointer] = [vx_cmd[0], vy_cmd[0], vz_cmd[0]]
                 self.acc_cmd[self.pointer] = [ax_cmd[0], ay_cmd[0], az_cmd[0]]
